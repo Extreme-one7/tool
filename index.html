@@ -1,0 +1,462 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tool Planner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:10px;background:#f2f2f2;color:#222;font:15px Arial,sans-serif}
+main{max-width:680px;margin:auto}
+h1{font-size:21px}
+h2{font-size:17px;margin:0 0 10px}
+h3{font-size:15px;margin:12px 0 7px}
+section{background:white;border:1px solid #ccc;padding:12px;margin:10px 0}
+label{display:block;margin:8px 0 4px}
+input,select,button{width:100%;padding:9px 5px;font:inherit;color:inherit;background:white;border:1px solid #999;border-radius:2px}
+button{cursor:pointer}
+.row{display:flex;gap:8px}
+.row>div{flex:1;min-width:0}
+.row>button{flex:1}
+.active{background:#333;color:white}
+.hidden{display:none}
+table{width:100%;border-collapse:collapse}
+td,th{text-align:left;border-bottom:1px solid #ddd;padding:6px 3px;font-size:13px}
+td input{padding:8px 3px;min-width:0}
+small{color:#555}
+.cityBox{border-top:1px solid #ddd;margin-top:12px;padding-top:5px}
+.best{background:#e4f3e0;padding:12px;margin:12px 0}
+#refresh{background:#dcebd8;font-weight:bold;padding:12px}
+.negative{color:#a00000}
+.positive{color:#176b27}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>Tool Planner</h1>
+
+<div class="row">
+<button id="materialsButton" class="active" onclick="showTab('materials')">Materials</button>
+<button id="gearButton" onclick="showTab('gear')">Gear</button>
+</div>
+
+<div id="materials">
+<section>
+<h2>Material Buying Decision</h2>
+
+<div class="row">
+<div>
+<label>Material</label>
+<select id="material">
+<option>Soul</option>
+<option>Rune</option>
+<option>Relic</option>
+</select>
+</div>
+<div>
+<label>Target tier</label>
+<select id="tier">
+<option value="4">T4</option>
+<option value="5">T5</option>
+<option value="6" selected>T6</option>
+<option value="7">T7</option>
+<option value="8">T8</option>
+</select>
+</div>
+</div>
+
+<label>Quantity needed</label>
+<input id="quantity" type="number" min="1" step="1" value="1">
+
+<div class="row">
+<div>
+<label>Buy-order tax %</label>
+<input id="orderTax" type="number" min="0" value="2.5">
+</div>
+<div>
+<label>Direct-buy tax %</label>
+<input id="directTax" type="number" min="0" value="0">
+</div>
+</div>
+
+</section>
+
+<section>
+<h2>Enter Market Prices</h2>
+
+<div class="row">
+<button id="oneButton" class="active" onclick="setMode('one')">One City</button>
+<button id="allButton" onclick="setMode('all')">All Cities</button>
+</div>
+
+<div id="cityChoice">
+<label>Select city</label>
+<select id="selectedCity">
+<option value="0">City 1</option>
+<option value="1">City 2</option>
+<option value="2">City 3</option>
+<option value="3">City 4</option>
+<option value="4">City 5</option>
+</select>
+</div>
+
+
+<div id="priceTables"></div>
+</section>
+
+<section>
+<h2>Buying Decision</h2>
+<button id="refresh" onclick="calculate()">&#8635; Refresh Calculation</button>
+<div id="decision"></div>
+<div id="comparison" class="scroll"></div>
+</section>
+</div>
+
+<div id="gear" class="hidden">
+<section>
+<h2>Gear Calculator</h2>
+<p>Separate feature for the next phase.</p>
+<p>It will compare buying finished gear against
+buying base gear and enchanting it.</p>
+<p><small>Materials calculations are independent
+of this tab.</small></p>
+</section>
+</div>
+
+</main>
+<script>
+"use strict";
+
+// CONFIGURATION
+const cities=["City 1","City 2","City 3","City 4","City 5"];
+const types=["order","direct"];
+const ratio=5;
+
+// All prices are temporary.
+// Nothing is written to browser storage.
+const prices={};
+let mode="one";
+
+const $=id=>document.getElementById(id);
+
+function money(number){
+  return number.toLocaleString("en-US",{
+    maximumFractionDigits:2
+  });
+}
+
+function key(material,tier,city,type){
+  return [material,tier,city,type].join("|");
+}
+
+function readPrice(material,tier,city,type){
+  const id=key(material,tier,city,type);
+  return Object.hasOwn(prices,id)?prices[id]:null;
+}
+
+function showTab(name){
+  for(const tab of ["materials","gear"]){
+    $(tab).classList.toggle("hidden",tab!==name);
+    $(tab+"Button").classList.toggle("active",tab===name);
+  }
+}
+
+function setMode(value){
+  mode=value;
+  $("oneButton").classList.toggle("active",mode==="one");
+  $("allButton").classList.toggle("active",mode==="all");
+  $("cityChoice").classList.toggle("hidden",mode==="all");
+  showPrices();
+}
+
+function activeCities(){
+  return mode==="one"
+    ? [Number($("selectedCity").value)]
+    : [0,1,2,3,4];
+}
+
+function markChanged(){
+  $("decision").textContent="Inputs changed. Tap Refresh Calculation.";
+  $("comparison").replaceChildren();
+}
+
+function makePriceTable(city){
+  const material=$("material").value;
+  const target=Number($("tier").value);
+
+  const box=document.createElement("div");
+  box.className="cityBox";
+
+  const heading=document.createElement("h3");
+  heading.textContent=cities[city];
+  box.append(heading);
+
+  const table=document.createElement("table");
+  const header=document.createElement("tr");
+
+  for(const title of ["Tier","Buy order","Direct buy"]){
+    const th=document.createElement("th");
+    th.textContent=title;
+    header.append(th);
+  }
+  table.append(header);
+
+  // All lower tiers are available, down to T4.
+  for(let tier=4;tier<=target;tier++){
+    const row=document.createElement("tr");
+    const tierCell=document.createElement("td");
+    tierCell.textContent="T"+tier;
+    row.append(tierCell);
+
+    for(const type of types){
+      const cell=document.createElement("td");
+      const input=document.createElement("input");
+      input.type="number";
+      input.min="0";
+      input.step="any";
+      input.inputMode="decimal";
+      input.placeholder="—";
+
+      const id=key(material,tier,city,type);
+      const old=readPrice(material,tier,city,type);
+      if(old!==null)input.value=old;
+
+      input.oninput=()=>{
+        const value=input.value.trim();
+        const number=Number(value);
+
+        if(value===""||!Number.isFinite(number)||number<0){
+          delete prices[id];
+        }else{
+          prices[id]=number;
+        }
+        markChanged();
+      };
+
+      cell.append(input);
+      row.append(cell);
+    }
+    table.append(row);
+  }
+
+  box.append(table);
+  return box;
+}
+
+function showPrices(){
+  const container=$("priceTables");
+  container.replaceChildren();
+
+  for(const city of activeCities()){
+    container.append(makePriceTable(city));
+  }
+  markChanged();
+}
+
+// A route buys its entire initial quantity at one tier.
+// Its purchasing method may differ from other routes.
+function buildRoute(material,target,quantity,city,type,start,tax){
+  const price=readPrice(material,start,city,type);
+  if(price===null||!Number.isFinite(price)||price<0){
+    return null;
+  }
+
+  const steps=target-start;
+  const units=quantity*Math.pow(ratio,steps);
+  const base=units*price;
+  const purchaseTax=base*tax/100;
+  const total=base+purchaseTax;
+
+  if(!Number.isFinite(total)||!Number.isSafeInteger(units)){
+    return null;
+  }
+
+  return {
+    city,
+    type,
+    start,
+    target,
+    units,
+    base,
+    purchaseTax,
+    total
+  };
+}
+
+function calculate(){
+  const material=$("material").value;
+  const target=Number($("tier").value);
+  const quantity=Number($("quantity").value);
+  const orderTax=Number($("orderTax").value);
+  const directTax=Number($("directTax").value);
+
+  const decision=$("decision");
+  const comparison=$("comparison");
+  decision.replaceChildren();
+  comparison.replaceChildren();
+
+  if(
+    $("quantity").value.trim()===""||
+    !Number.isSafeInteger(quantity)||quantity<1||
+    $("orderTax").value.trim()===""||
+    !Number.isFinite(orderTax)||orderTax<0||
+    $("directTax").value.trim()===""||
+    !Number.isFinite(directTax)||directTax<0
+  ){
+    decision.textContent="Enter valid quantity and taxes.";
+    return;
+  }
+
+  const routes=[];
+
+  for(const city of activeCities()){
+    for(const type of types){
+      const tax=type==="order"?orderTax:directTax;
+
+      for(let start=4;start<=target;start++){
+        const route=buildRoute(
+          material,target,quantity,city,type,start,tax
+        );
+        if(route!==null)routes.push(route);
+      }
+    }
+  }
+
+  if(routes.length===0){
+    decision.textContent=
+      "No usable prices entered. Add at least one price.";
+    return;
+  }
+
+  routes.sort((a,b)=>a.total-b.total);
+
+  const best=routes[0];
+
+  // Find the cheapest direct acquisition of target tier.
+  const directOptions=routes.filter(
+    route=>route.start===target
+  );
+  const directBaseline=directOptions.length
+    ? directOptions[0]
+    : null;
+
+  const box=document.createElement("div");
+  box.className="best";
+
+  const title=document.createElement("h3");
+  title.textContent="CHEAPEST ENTERED OPTION";
+  box.append(title);
+
+  const summary=document.createElement("p");
+  summary.textContent=
+    "Buy "+money(best.units)+" T"+best.start+" "+
+    material+" in "+cities[best.city]+
+    " using "+(best.type==="order"?"Buy order":"Direct buy")+
+    (best.start===target?".":", then convert to T"+target+".");
+  box.append(summary);
+
+  const cost=document.createElement("h2");
+  cost.textContent=money(best.total)+" silver";
+  box.append(cost);
+
+  const breakdown=document.createElement("p");
+  breakdown.textContent=
+    "Purchase: "+money(best.base)+
+    " + tax: "+money(best.purchaseTax);
+  box.append(breakdown);
+
+  if(directBaseline){
+    const saving=document.createElement("p");
+    const difference=directBaseline.total-best.total;
+
+    saving.textContent=
+      difference>0
+      ? "Savings against cheapest direct T"+target+
+        " purchase: "+money(difference)+" silver."
+      : "Direct T"+target+" purchase is already cheapest "+
+        "(or tied).";
+
+    box.append(saving);
+  }else{
+    const warning=document.createElement("p");
+    warning.textContent=
+      "Direct T"+target+" price missing. "+
+      "Savings against direct purchase cannot be calculated.";
+    box.append(warning);
+  }
+
+  decision.append(box);
+
+  const heading=document.createElement("h3");
+  heading.textContent="All available buying routes";
+  comparison.append(heading);
+
+  const table=document.createElement("table");
+  const header=document.createElement("tr");
+
+  for(const label of ["Route","City / Method","Cost","vs Direct"]){
+    const th=document.createElement("th");
+    th.textContent=label;
+    header.append(th);
+  }
+  table.append(header);
+
+  for(const route of routes){
+    const row=document.createElement("tr");
+
+    const difference=directBaseline
+      ? directBaseline.total-route.total
+      : null;
+
+    const values=[
+      "T"+route.start+" → T"+target,
+      cities[route.city]+
+        " / "+(route.type==="order"?"Order":"Direct"),
+      money(route.total),
+      difference===null?"N/A":
+        (difference>=0?"+":"")+money(difference)
+    ];
+
+    values.forEach((value,index)=>{
+      const cell=document.createElement("td");
+      cell.textContent=value;
+
+      if(index===3&&difference!==null){
+        cell.className=difference>=0?"positive":"negative";
+      }
+      row.append(cell);
+    });
+    table.append(row);
+  }
+
+  comparison.append(table);
+
+  const note=document.createElement("p");
+  const small=document.createElement("small");
+  small.textContent=
+    "Positive 'vs Direct' means savings against the "+
+    "cheapest entered direct acquisition of T"+target+
+    " across the selected cities and buying methods. "+
+    "Routes assume 5:1 conversion and no conversion "+
+    "charges. A route buys all starting units in one city "+
+    "using one method; it does not combine partial stock "+
+    "or purchases from multiple cities.";
+  note.append(small);
+  comparison.append(note);
+}
+
+// EVENTS
+$("material").onchange=showPrices;
+$("tier").onchange=showPrices;
+$("selectedCity").onchange=showPrices;
+
+for(const id of ["quantity","orderTax","directTax"]){
+  $(id).oninput=markChanged;
+}
+
+showPrices();
+</script>
+</body>
+</html>
